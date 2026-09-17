@@ -12,6 +12,8 @@
 
 #include <array>
 #include <cstdint>
+#include <ios>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -139,9 +141,25 @@ namespace myactuator_rmd {
   template <std::uint32_t SEND_ID_OFFSET, std::uint32_t RECEIVE_ID_OFFSET>
   std::array<std::uint8_t,8> CanNode<SEND_ID_OFFSET,RECEIVE_ID_OFFSET>::sendRecv(Message const& request, std::uint32_t const actuator_id) {
     auto const can_send_id {getCanSendId(actuator_id)};
+    auto const expected_receive_id {getCanReceiveId(actuator_id)};
     write(can_send_id, request.getData());
-    can::Frame const frame {can::Node::read()};
-    return frame.getData();
+
+    // The receive filter admits replies from every actuator ever added to this driver, so
+    // with several actuators sharing one socket a reply meant for a different actuator can
+    // be next in the queue. Discard anything not addressed to this actuator rather than
+    // silently attributing it to the wrong one.
+    auto const max_attempts {actuator_ids_.size() + 1};
+    for (std::size_t attempt = 0; attempt < max_attempts; ++attempt) {
+      can::Frame const frame {can::Node::read()};
+      if (frame.getId() == expected_receive_id) {
+        return frame.getData();
+      }
+    }
+    std::stringstream ss {};
+    ss << std::showbase << std::hex << expected_receive_id;
+    throw ProtocolException("Did not receive a response from actuator '" + std::to_string(actuator_id) +
+                             "' (expected CAN id '" + ss.str() + "') after " + std::to_string(max_attempts) +
+                             " frames -- responses from other actuators on the shared bus intervened");
   }
 
   template <std::uint32_t SEND_ID_OFFSET, std::uint32_t RECEIVE_ID_OFFSET>
